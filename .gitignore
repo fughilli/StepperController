@@ -4,3 +4,4 @@
 *.mk
 *.txt
 Debug/
+.launches/
