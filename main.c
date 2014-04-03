@@ -1,5 +1,7 @@
 #include <msp430.h>
 #include "simple_io.h"
+#include <stdint.h>
+#include <stdlib.h>
 /*
  *	TODO:
  *	Save stepper state index to flash when driver shuts off
@@ -25,10 +27,10 @@
  *
  */
 /*-----Stepper state variables-----*/
-#define STEPPER_ENABLE_PIN_MASK			0x0021			// These pins enable the L298N
+#define STEPPER_ENABLE_PIN_MASK			0x0003			// These pins enable the L298N
 #define STEPPER_ENABLE_A_PIN			0				// This pin is connected to the L298N's channel A enable pin
 #define STEPPER_ENABLE_B_PIN			1				// This pin is connected to the L298N's channel B enable pin
-#define STEPPER_ENDSTOP_PIN_MASK		0x0300			// These pins are connected to the endstops
+#define STEPPER_ENDSTOP_PIN_MASK		0xC000			// These pins are connected to the endstops
 #define STEPPER_ENSTOP_A_PIN			15				// This pin is connected to the low endstop
 #define STEPPER_ENSTOP_B_PIN			14				// This pin is connected to the high endstop
 /* 4 stepper states: AB, A'B, A'B', AB'
@@ -81,15 +83,15 @@ union
 {
 	struct
 	{
-		unsigned int period;
-		unsigned int stepCounter;
-		unsigned char control;
+		uint32_t period;
+		uint32_t stepCounter;
+		uint8_t control;
 	} named;
 
-	unsigned char raw[SIZE_OF_RAW_BUFFER];
+	uint8_t raw[SIZE_OF_RAW_BUFFER];
 } controlData, controlDataBuffer;
 
-volatile unsigned int stepPeriodOverflowStore = 0;
+volatile uint32_t stepPeriodOverflowStore = 0;
 
 #define STEP_COUNTER_OFFSET 4
 
@@ -121,13 +123,13 @@ volatile unsigned int stepPeriodOverflowStore = 0;
  * H = HOLD POSITION
  *
  * +---+---+---+---+---+---+---+---+
- * |   |   |   |   | D | H | I | I |
+ * | D | H |   |   | I | I | I | I |
  * +---+---+---+---+---+---+---+---+
  */
 
-#define STEPPER_CONTROL_MODE_INDEX_MASK 			0x0003
-#define STEPPER_CONTROL_DIRECTION_MASK				0x0008
-#define STEPPER_CONTROL_HOLD_POSITION_MASK			0x0004
+#define STEPPER_CONTROL_MODE_INDEX_MASK 			0x000F
+#define STEPPER_CONTROL_DIRECTION_MASK				0x0080
+#define STEPPER_CONTROL_HOLD_POSITION_MASK			0x0040
 
 #define STEPPER_INDEX (controlData.named.control & STEPPER_CONTROL_MODE_INDEX_MASK)
 
@@ -200,37 +202,37 @@ __interrupt void Stepper_SR(void)
 
 	if (controlData.named.control & STEPPER_CONTROL_DIRECTION_MASK)
 	{			// If CCW
-		if (STEPPER_INDEX == STEPPER_NUMBER_STEPPER_MODES-1)
+		if (STEPPER_INDEX == STEPPER_NUMBER_STEPPER_MODES - 1)
 		{				// If the stepper mode index reached 3 this time
-			controlData.named.control &= ~STEPPER_CONTROL_MODE_INDEX_MASK;		// Set stepper mode index back to 0
+			controlData.named.control &= ~STEPPER_CONTROL_MODE_INDEX_MASK;// Set stepper mode index back to 0
 		}
 		else
 		{
-			controlData.named.control++;						// Increment stepper mode index
+			controlData.named.control++;		// Increment stepper mode index
 		}
 	}
 	else
 	{										// If CW
 		if (STEPPER_INDEX == 0)
 		{				// If the stepper mode index reached 0 last time
-			controlData.named.control |= STEPPER_CONTROL_MODE_INDEX_MASK;			// Set stepper mode index back to 3
+			controlData.named.control |= STEPPER_CONTROL_MODE_INDEX_MASK;// Set stepper mode index back to 3
 		}
 		else
 		{
-			controlData.named.control--;						// Decrement stepper mode index
+			controlData.named.control--;		// Decrement stepper mode index
 		}
 	}
-	controlData.named.stepCounter--;						// Decrement the step counter
+	controlData.named.stepCounter--;			// Decrement the step counter
 
 	if (controlData.named.stepCounter == 0)
 	{							// If there are no more steps to take
 		TACTL &= ~MC_3;								// Stop the timer
 		if (!(controlData.named.control & STEPPER_CONTROL_HOLD_POSITION_MASK))
 		{
-			P1OUT &= ~STEPPER_ENABLE_PIN_MASK;			// Disable stepper driver
+			P1OUT &= ~STEPPER_ENABLE_PIN_MASK;		// Disable stepper driver
 		}
 	}
-
+	_BIS_SR_IRQ(GIE);
 }
 
 #pragma vector=USI_VECTOR
@@ -257,20 +259,21 @@ __interrupt void I2C_SR()
 
 	case 4:
 	{								// Process Address and send (N)Acknowledge
-		if (((USISRL & 0x01) == 1) && R_I2C_Expected)
-		{											// If read...
-			RW_I2C_Mode = 1;						// Save R/W bit
-			R_I2C_Expected = 0;
-		}
-		else
-		{
-			RW_I2C_Mode = 0;
-			R_I2C_Expected = 0;
-		}
-		USICTL0 |= USIOE;        					// SDA = output
 		if (((USISRL & ~0x01) == (SLV_Addr << 1))
 				| (USISRL == (BRDCST_Addr << 1)))  		// Address match?
 		{
+			if (((USISRL & 0x01) == 1) && R_I2C_Expected)
+			{											// If read...
+				RW_I2C_Mode = 1;						// Save R/W bit
+				R_I2C_Expected = 0;
+			}
+			else
+			{
+				RW_I2C_Mode = 0;
+				R_I2C_Expected = 0;
+			}
+			USICTL0 |= USIOE;        					// SDA = output
+
 			USISRL = 0x00;        					// Send Acknowledge
 			I2C_State = 8 + RW_I2C_Mode;			// Go to next state: RX data
 		}
@@ -288,6 +291,8 @@ __interrupt void I2C_SR()
 		USICTL0 &= ~USIOE;       					// SDA = input
 		RW_I2C_Mode = 0;         					// Reset slave address
 		I2C_State = 0;           					// Reset state machine
+		RXIndex = TXIndex = 0;
+		RXData = 0;
 		break;
 	}
 
@@ -311,14 +316,16 @@ __interrupt void I2C_SR()
 			{
 				if (controlDataBuffer.named.stepCounter > 0)
 				{		// If there are any steps commanded to execute
-					stepPeriodOverflowStore = controlData.named.period = controlDataBuffer.named.period;// Unload register buffers
+					stepPeriodOverflowStore = controlData.named.period =
+							controlDataBuffer.named.period;	// Unload register buffers
 					controlData.named.stepCounter =
 							controlDataBuffer.named.stepCounter;
 					controlData.named.control =
-							((controlDataBuffer.named.control & 0xFFFC)
-									| (controlData.named.control & 0x0003));// Preserve bottom 2 bits (stepper state index)
-					controlData.named.period = controlData.named.stepCounter =
-							controlData.named.control = 0;		// Clear buffers
+							((controlDataBuffer.named.control & (0xFFFF^STEPPER_CONTROL_MODE_INDEX_MASK))
+									| (controlData.named.control & STEPPER_CONTROL_MODE_INDEX_MASK));// Preserve bottom 2 bits (stepper state index)
+					controlDataBuffer.named.period =
+							controlDataBuffer.named.stepCounter =
+									controlDataBuffer.named.control = 0;// Clear buffers
 					P1OUT |= STEPPER_ENABLE_PIN_MASK;	// Enable stepper driver
 					TACCR0 = 1;					// Interrupt occurs immediately
 					TACTL |= MC_1;					// Start TimerA
@@ -408,7 +415,8 @@ __interrupt void I2C_SR()
 		if (TXIndex < sizeof(controlData.named.stepCounter))
 		{
 			USISRL = 								// Transmit the upper byte
-					((controlData.raw[STEP_COUNTER_OFFSET + TXIndex] >> 8) & 0xFF);
+					((controlData.raw[STEP_COUNTER_OFFSET + TXIndex] >> 8)
+							& 0xFF);
 			I2C_State = 11;						// Receive (N)Acknowledge bit
 			TXIndex++;
 		}

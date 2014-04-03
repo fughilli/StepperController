@@ -96,5 +96,5 @@ SECTIONS
 /* INCLUDE PERIPHERALS MEMORY MAP                                           */
 /****************************************************************************/
 
--l msp430g2231.cmd
+-l msp430g2231_mod.cmd
 
