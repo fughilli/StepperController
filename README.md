@@ -1,4 +1,4 @@
-StepperController
-=================
+ServoController
+===============
 
-Controller for stepper motors using an MSP430 and an L293D
+Controller for R/C servo motors using an MSP430
